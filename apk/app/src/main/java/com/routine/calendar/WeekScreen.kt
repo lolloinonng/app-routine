@@ -328,9 +328,8 @@ private fun TimelineEvent(p: Placed, onClick: () -> Unit) {
         Row(Modifier.fillMaxSize()) {
             Box(Modifier.width(5.dp).height(h).background(c))
             Column(
-                Modifier.padding(horizontal = 8.dp, vertical = if (compact) 2.dp else 5.dp),
+                modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = if (compact) 2.dp else 5.dp),
                 verticalArrangement = if (compact) Arrangement.Center else Arrangement.Top,
-                modifier = Modifier.fillMaxSize(),
             ) {
                 if (compact) {
                     // Riga singola come sul sito: orario + titolo troncato
