@@ -1,88 +1,123 @@
 package com.routine.calendar
 
 import android.Manifest
-import android.app.Activity
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
-import android.webkit.JavascriptInterface
-import android.webkit.WebChromeClient
-import android.webkit.WebResourceError
-import android.webkit.WebResourceRequest
-import android.webkit.WebView
-import android.webkit.WebViewClient
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Button
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TextField
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import com.google.firebase.FirebaseApp
+import com.google.firebase.FirebaseOptions
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.FirebaseUser
 
-class MainActivity : Activity() {
-
-    companion object {
-        // Sito pubblicato (stesso Firebase del PC) + copia locale di riserva offline
-        const val REMOTE_URL = "https://lolloinonng.github.io/app-routine/"
-        const val LOCAL_URL = "file:///android_asset/www/index.html"
-    }
-
-    private lateinit var web: WebView
-    private var fellBack = false
+class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        web = WebView(this)
-        setContentView(web)
-
-        web.settings.javaScriptEnabled = true
-        web.settings.domStorageEnabled = true
-        web.settings.mediaPlaybackRequiresUserGesture = false
-        // Fondamentale: senza WebChromeClient i confirm()/alert() del sito
-        // (es. "Ripristina Routine Predefinita") vengono ignorati e il reset non parte
-        web.webChromeClient = WebChromeClient()
-        web.webViewClient = object : WebViewClient() {
-            override fun onReceivedError(
-                view: WebView, request: WebResourceRequest, error: WebResourceError
-            ) {
-                // Se il sito remoto non è raggiungibile, usa la copia offline
-                if (!fellBack && request.isForMainFrame && request.url.toString() == REMOTE_URL) {
-                    fellBack = true
-                    view.loadUrl(LOCAL_URL)
-                }
-            }
-        }
-        web.addJavascriptInterface(Bridge(), "AndroidBridge")
-
-        if (savedInstanceState != null) {
-            web.restoreState(savedInstanceState)
-        } else {
-            // Stesso sito del PC (stesso Firebase): condivisioni eventi garantite.
-            // Copia locale solo se offline (ma lì Firebase non sincronizza).
-            web.loadUrl(REMOTE_URL)
-        }
-
+        ensureFirebase()
         if (Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1001)
         }
+        setContent { MaterialTheme { App() } }
     }
 
-    override fun onSaveInstanceState(outState: Bundle) {
-        super.onSaveInstanceState(outState)
-        if (::web.isInitialized) web.saveState(outState)
-    }
-
-    override fun onBackPressed() {
-        if (::web.isInitialized && web.canGoBack()) web.goBack()
-        else super.onBackPressed()
-    }
-
-    inner class Bridge {
-        // [{title, body, at (epoch ms), tag}] — sveglie di oggi dal sito
-        @JavascriptInterface
-        fun schedule(json: String) {
-            EventScheduler.schedule(this@MainActivity, json)
+    private fun ensureFirebase() {
+        if (FirebaseApp.getApps(this).isEmpty()) {
+            // Stesso progetto del sito: app e PC condividono auth + database
+            FirebaseApp.initializeApp(
+                this,
+                FirebaseOptions.Builder()
+                    .setApiKey("AIzaSyAzjGvo43AQpvGrDjIpJ1YCxTs0wljn6cI")
+                    .setApplicationId("1:417271086293:web:057448370e230bfb94765c")
+                    .setProjectId("routine-d2347")
+                    .setDatabaseUrl("https://routine-d2347-default-rtdb.europe-west1.firebasedatabase.app")
+                    .build(),
+            )
         }
+    }
+}
 
-        @JavascriptInterface
-        fun cancel() {
-            EventScheduler.cancelAll(this@MainActivity)
+@Composable
+fun App() {
+    val auth = remember { FirebaseAuth.getInstance() }
+    var user by remember { mutableStateOf(auth.currentUser) }
+    DisposableEffect(Unit) {
+        val l = FirebaseAuth.AuthStateListener { user = it.currentUser }
+        auth.addAuthStateListener(l)
+        onDispose { auth.removeAuthStateListener(l) }
+    }
+    val u: FirebaseUser? = user
+    if (u == null) AuthScreen(auth) else WeekScreen(
+        uid = u.uid,
+        email = u.email,
+        onLogout = { auth.signOut() },
+    )
+}
+
+@Composable
+fun AuthScreen(auth: FirebaseAuth) {
+    var email by remember { mutableStateOf("") }
+    var pass by remember { mutableStateOf("") }
+    var register by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+
+    Column(
+        Modifier.fillMaxSize().padding(24.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text("Routine", style = MaterialTheme.typography.headlineMedium)
+        Text("Accedi per sincronizzare con il sito", style = MaterialTheme.typography.bodyMedium)
+        Spacer(Modifier.height(16.dp))
+        if (error.isNotEmpty()) Text(error, color = MaterialTheme.colorScheme.error)
+        TextField(value = email, onValueChange = { email = it }, label = { Text("Email") }, modifier = Modifier.fillMaxWidth())
+        Spacer(Modifier.height(8.dp))
+        TextField(
+            value = pass, onValueChange = { pass = it }, label = { Text("Password") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+        )
+        Spacer(Modifier.height(12.dp))
+        Button(
+            onClick = {
+                error = ""
+                if (email.isBlank() || pass.isEmpty()) { error = "Compila email e password"; return@Button }
+                busy = true
+                if (register) auth.createUserWithEmailAndPassword(email.trim(), pass)
+                    .addOnCompleteListener { busy = false; if (!it.isSuccessful) error = it.exception?.localizedMessage ?: "Errore" }
+                else auth.signInWithEmailAndPassword(email.trim(), pass)
+                    .addOnCompleteListener { busy = false; if (!it.isSuccessful) error = it.exception?.localizedMessage ?: "Credenziali non valide" }
+            },
+            enabled = !busy,
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text(if (register) "Registrati" else "Accedi") }
+        TextButton(onClick = { register = !register; error = "" }) {
+            Text(if (register) "Hai già un account? Accedi" else "Non hai un account? Registrati")
         }
     }
 }
