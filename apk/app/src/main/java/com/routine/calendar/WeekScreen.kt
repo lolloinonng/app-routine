@@ -3,6 +3,7 @@ package com.routine.calendar
 import android.app.TimePickerDialog
 import android.content.Context
 import android.widget.Toast
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -13,11 +14,12 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ChevronLeft
@@ -40,14 +42,20 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.google.firebase.database.ValueEventListener
 import org.json.JSONArray
@@ -62,6 +70,10 @@ val typeColors = mapOf(
     "trade" to Color(0xFFB7791F),
     "sport" to Color(0xFFEA4335),
 )
+
+// Altezza di un'ora in timeline: come il sito (60px) ma leggera da disegnare
+private val HOUR_H: Dp = 60.dp
+private val MIN_H: Dp = 28.dp
 
 private fun uiPrefs(ctx: Context) = ctx.getSharedPreferences("routine_ui", Context.MODE_PRIVATE)
 
@@ -100,9 +112,22 @@ fun scheduleTodayEvents(ctx: Context, data: Map<String, List<Ev>>) {
 
 data class EditTarget(val day: String, val ev: Ev?)
 
+/** Evento con minuti assoluti (00:00 di fine = 1440). */
+private data class Placed(val ev: Ev, val sMin: Int, val eMin: Int) {
+    val dur: Int get() = eMin - sMin
+}
+
+private fun placeEvents(evs: List<Ev>): List<Placed> = evs.map { ev ->
+    var s = toMin(ev.start)
+    var e = if (ev.end == "00:00") 1440 else toMin(ev.end)
+    if (e <= s) e = s + 30
+    Placed(ev, s, e)
+}
+
 @Composable
 fun WeekScreen(uid: String, email: String?, onLogout: () -> Unit) {
     val ctx = LocalContext.current
+    val density = LocalDensity.current
     var weekOffset by remember { mutableStateOf(0) }
     val monday = remember(weekOffset) { getMonday(weekOffset) }
     val weekId = remember(monday) { weekIdOf(monday) }
@@ -135,6 +160,16 @@ fun WeekScreen(uid: String, email: String?, onLogout: () -> Unit) {
         }
     }
 
+    // Posizioni calcolate una sola volta per giorno (niente ricalcoli a ogni scroll)
+    val placed = remember(data, selectedDay) { placeEvents(data[selectedDay].orEmpty()) }
+
+    val scroll = rememberScrollState()
+    val y8px = remember(density) { with(density) { (HOUR_H * 8).toPx() }.toInt() }
+    // Come il sito: all'apertura punta alle 8 (solo settimana corrente)
+    LaunchedEffect(weekId, selectedDay) {
+        scroll.scrollTo(if (weekOffset == 0) y8px else 0)
+    }
+
     Column(Modifier.fillMaxSize()) {
         // Barra titolo + settimana
         Row(
@@ -162,7 +197,7 @@ fun WeekScreen(uid: String, email: String?, onLogout: () -> Unit) {
 
         // Giorni
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-            val df = SimpleDateFormat("d", Locale.ITALIAN)
+            val df = remember { SimpleDateFormat("d", Locale.ITALIAN) }
             for (dk in dayOrder) {
                 val sel = dk == selectedDay
                 val isToday = dk == todayKey() && weekOffset == 0
@@ -182,31 +217,25 @@ fun WeekScreen(uid: String, email: String?, onLogout: () -> Unit) {
             }
         }
 
-        // Eventi del giorno — lista verticale, scroll col dito
+        // Timeline proporzionale: altezza evento = durata (come il sito)
         if (loading) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+        } else if (placed.isEmpty()) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text("Nessun evento — tocca + per aggiungerne uno")
+            }
         } else {
-            val evs = data[selectedDay].orEmpty()
-            if (evs.isEmpty()) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("Nessun evento — tocca + per aggiungerne uno")
-                }
-            } else {
-                LazyColumn(Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 4.dp)) {
-                    items(evs, key = { it.key }) { ev ->
-                        val c = typeColors[ev.type] ?: Color.Gray
-                        Card(
-                            Modifier.fillMaxWidth().padding(vertical = 4.dp)
-                                .clickable { editTarget = EditTarget(selectedDay, ev) },
-                        ) {
-                            Row(Modifier.fillMaxWidth()) {
-                                Box(Modifier.width(6.dp).height(64.dp).background(c))
-                                Column(Modifier.padding(10.dp)) {
-                                    Text("${ev.start} – ${ev.end}", style = MaterialTheme.typography.labelMedium)
-                                    Text(ev.title, style = MaterialTheme.typography.titleSmall)
-                                    Text(ev.type, style = MaterialTheme.typography.bodySmall)
-                                }
-                            }
+            val totalH = HOUR_H * 24
+            Column(Modifier.fillMaxSize().verticalScroll(scroll)) {
+                Row(Modifier.fillMaxWidth().height(totalH)) {
+                    TimeGutter()
+                    Box(Modifier.weight(1f).height(totalH)) {
+                        HourGrid()
+                        for (p in placed) {
+                            TimelineEvent(
+                                p = p,
+                                onClick = { editTarget = EditTarget(selectedDay, p.ev) },
+                            )
                         }
                     }
                 }
@@ -244,6 +273,80 @@ fun WeekScreen(uid: String, email: String?, onLogout: () -> Unit) {
             },
             dismissButton = { TextButton(onClick = { showReset = false }) { Text("Annulla") } },
         )
+    }
+}
+
+/** Colonna ore 00–23. */
+@Composable
+private fun TimeGutter() {
+    Column(Modifier.width(48.dp)) {
+        for (h in 0..23) {
+            Box(Modifier.height(HOUR_H), contentAlignment = Alignment.TopEnd) {
+                Text(
+                    String.format("%02d:00", h),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(end = 6.dp, top = 2.dp),
+                )
+            }
+        }
+    }
+}
+
+/** Griglia ore/mezz'ore disegnata in un colpo solo (1 composable, zero lag). */
+@Composable
+private fun HourGrid() {
+    val line = MaterialTheme.colorScheme.outlineVariant
+    val half = MaterialTheme.colorScheme.surfaceVariant
+    val density = LocalDensity.current
+    val hPx = remember(density) { with(density) { HOUR_H.toPx() } }
+    Canvas(Modifier.fillMaxSize()) {
+        for (h in 0..24) {
+            drawLine(line, Offset(0f, h * hPx), Offset(size.width, h * hPx), strokeWidth = 1f)
+            if (h < 24) {
+                drawLine(half, Offset(0f, h * hPx + hPx / 2), Offset(size.width, h * hPx + hPx / 2), strokeWidth = 1f)
+            }
+        }
+    }
+}
+
+/** Blocco evento alto in proporzione alla durata. Sotto i 45' diventa riga singola. */
+@Composable
+private fun TimelineEvent(p: Placed, onClick: () -> Unit) {
+    val c = typeColors[p.ev.type] ?: Color.Gray
+    val top = HOUR_H * (p.sMin / 60f)
+    val h = (HOUR_H * (p.dur / 60f)).coerceAtLeast(MIN_H)
+    val compact = p.dur < 45
+    Card(
+        Modifier.fillMaxWidth()
+            .padding(horizontal = 4.dp)
+            .offset(y = top)
+            .height(h)
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(onClick = onClick),
+    ) {
+        Row(Modifier.fillMaxSize()) {
+            Box(Modifier.width(5.dp).height(h).background(c))
+            Column(
+                Modifier.padding(horizontal = 8.dp, vertical = if (compact) 2.dp else 5.dp),
+                verticalArrangement = if (compact) Arrangement.Center else Arrangement.Top,
+                modifier = Modifier.fillMaxSize(),
+            ) {
+                if (compact) {
+                    // Riga singola come sul sito: orario + titolo troncato
+                    Text(
+                        "${p.ev.start}–${p.ev.end} • ${p.ev.title}",
+                        style = MaterialTheme.typography.labelMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                } else {
+                    Text("${p.ev.start}–${p.ev.end}", style = MaterialTheme.typography.labelMedium, maxLines = 1)
+                    Text(p.ev.title, style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    if (p.dur >= 60) Text(p.ev.type, style = MaterialTheme.typography.bodySmall, maxLines = 1)
+                }
+            }
+        }
     }
 }
 
