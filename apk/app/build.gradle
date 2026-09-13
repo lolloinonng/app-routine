@@ -1,0 +1,41 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+
+android {
+    namespace 'com.routine.calendar'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'com.routine.calendar'
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName '1.0'
+    }
+
+    buildTypes {
+        debug {}
+        release {
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    kotlinOptions {
+        jvmTarget = '17'
+    }
+}
+
+// Copia i file web dalla root del repo (unica fonte) negli asset dell'APK.
+tasks.register('copyWww', Copy) {
+    from("${rootDir}/../") {
+        include 'index.html', 'manifest.webmanifest', 'sw.js', 'icon-192.png', 'icon-512.png'
+    }
+    into 'src/main/assets/www'
+}
+tasks.named('preBuild') { dependsOn 'copyWww' }
